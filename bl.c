@@ -72,21 +72,57 @@ int main(int argc, char *argv[]) {
   unsigned long long found = 0;
   MPI_Irecv(&found, 1, MPI_UNSIGNED_LONG_LONG, MPI_ANY_SOURCE, MPI_ANY_TAG, comm, &req);
 
+  printf("Rank %d: iniciando rango [%llu, %llu)\n", id, mylower, myupper);
+
   for (unsigned long long i = mylower; i < myupper && (found == 0); ++i) {
     if (tryKey(i, (char *)cipher, ciphlen)) {
       found = i;
       for (int node = 0; node < N; node++) {
         MPI_Send(&found, 1, MPI_UNSIGNED_LONG_LONG, node, 0, MPI_COMM_WORLD);
       }
+      printf("Rank %d: encontró la clave %llu\n", id, found);
       break;
+    }
+    if ((i % 1000000) == 0) {
+      printf("Rank %d: probadas %llu claves...\n", id, i - mylower);
+      fflush(stdout);
     }
   }
 
-  if (id == 0) {
+  printf("Rank %d: terminó su bucle sin encontrar clave.\n", id);
+
+  unsigned long long global_found = 0;
+  MPI_Allreduce(&found, &global_found, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, comm);
+
+  if (global_found == 0) {
+    // nadie encontró la clave -> cancelar la recepción pendiente para evitar bloqueo
+    MPI_Cancel(&req);
+    MPI_Request_free(&req);
+    if (id == 0) {
+      printf("Nadie encontró la clave. cancelado Irecv y saliendo.\n");
+      fflush(stdout);
+    }
+  } else {
+    // alguien encontró la clave -> esperar el mensaje (completará el MPI_Irecv)
+    if (id == 0) {
+      printf("Algún proceso encontró la clave, esperando MPI_Wait para recibir valor...\n");
+      fflush(stdout);
+    }
     MPI_Wait(&req, &st);
-    decrypt(found, (char *)cipher, ciphlen);
-    printf("Clave encontrada: %llu\nTexto: %s\n", found, cipher);
   }
+
+  // if (id == 0) {
+  //   printf("Rank 0: esperando resultado con MPI_Wait...\n");
+  //   MPI_Wait(&req, &st);
+  //    printf("Rank 0: terminó el MPI_Wait, valor encontrado = %llu\n", found);
+  //   decrypt(found, (char *)cipher, ciphlen);
+  //   printf("Clave encontrada: %llu\nTexto: %s\n", found, cipher);
+  // }
+  if (id == 0 && global_found != 0) {
+    decrypt(global_found, (char *)cipher, ciphlen);
+    printf("Clave encontrada: %llu\nTexto: %s\n", (unsigned long long)global_found, cipher);
+    fflush(stdout);
+  } 
 
   MPI_Finalize();
   return 0;
