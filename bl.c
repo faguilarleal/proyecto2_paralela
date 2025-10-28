@@ -95,7 +95,7 @@ int main(int argc, char *argv[]) {
   MPI_Allreduce(&found, &global_found, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, comm);
 
   if (global_found == 0) {
-    // nadie encontró la clave -> cancelar la recepción pendiente para evitar bloqueo
+    // nadie encontró la clave se cancela para evitar bloqueo
     MPI_Cancel(&req);
     MPI_Request_free(&req);
     if (id == 0) {
@@ -103,7 +103,7 @@ int main(int argc, char *argv[]) {
       fflush(stdout);
     }
   } else {
-    // alguien encontró la clave -> esperar el mensaje (completará el MPI_Irecv)
+    // alguien encontró la clave se espera el mensaje
     if (id == 0) {
       printf("Algún proceso encontró la clave, esperando MPI_Wait para recibir valor...\n");
       fflush(stdout);
