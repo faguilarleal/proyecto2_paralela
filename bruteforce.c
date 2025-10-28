@@ -1,86 +1,129 @@
-//bruteforce.c
-//nota: el key usado es bastante pequenio, cuando sea random speedup variara
-
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <mpi.h>
 #include <unistd.h>
-#include <rpc/des_crypt.h>
+#include <openssl/des.h>
 
-void decrypt(long key, char *ciph, int len){
-  //set parity of key and do decrypt
-  long k = 0;
-  for(int i=0; i<8; ++i){
-    key <<= 1;
-    k += (key & (0xFE << i*8));
+void decrypt(unsigned long long key, char *ciph, int len) {
+  DES_cblock k;
+  DES_key_schedule schedule;
+
+  // Generar bytes de clave desde el entero
+  for (int i = 0; i < 8; i++) {
+    k[7 - i] = (key >> (i * 8)) & 0xFF;
   }
-  des_setparity((char *)&k);  //el poder del casteo y &
-  ecb_crypt((char *)&k, (char *) ciph, 16, DES_DECRYPT);
+  DES_set_odd_parity(&k);
+  DES_set_key_unchecked(&k, &schedule);
+
+  for (int i = 0; i < len; i += 8) {
+    DES_ecb_encrypt((DES_cblock *)(ciph + i), (DES_cblock *)(ciph + i), &schedule, DES_DECRYPT);
+  }
 }
 
-void encrypt(long key, char *ciph, int len){
-  //set parity of key and do decrypt
-  long k = 0;
-  for(int i=0; i<8; ++i){
-    key <<= 1;
-    k += (key & (0xFE << i*8));
+void encrypt(unsigned long long key, char *ciph, int len) {
+  DES_cblock k;
+  DES_key_schedule schedule;
+
+  for (int i = 0; i < 8; i++) {
+    k[7 - i] = (key >> (i * 8)) & 0xFF;
   }
-  des_setparity((char *)&k);  //el poder del casteo y &
-  ecb_crypt((char *)&k, (char *) ciph, 16, DES_ENCRYPT);
+  DES_set_odd_parity(&k);
+  DES_set_key_unchecked(&k, &schedule);
+
+  for (int i = 0; i < len; i += 8) {
+    DES_ecb_encrypt((DES_cblock *)(ciph + i), (DES_cblock *)(ciph + i), &schedule, DES_ENCRYPT);
+  }
 }
 
 char search[] = " the ";
-int tryKey(long key, char *ciph, int len){
-  char temp[len+1];
+int tryKey(unsigned long long key, char *ciph, int len) {
+  char temp[len + 1];
   memcpy(temp, ciph, len);
-  temp[len]=0;
+  temp[len] = 0;
   decrypt(key, temp, len);
-  return strstr((char *)temp, search) != NULL;
+  return strstr(temp, search) != NULL;
 }
 
-unsigned char cipher[] = {108, 245, 65, 63, 125, 200, 150, 66, 17, 170, 207, 170, 34, 31, 70, 215, 0};
-int main(int argc, char *argv[]){ //char **argv
+unsigned char cipher[] = {
+  108, 245, 65, 63, 125, 200, 150, 66,
+  17, 170, 207, 170, 34, 31, 70, 215, 0
+};
+
+int main(int argc, char *argv[]) {
   int N, id;
-  long upper = (1L <<56); //upper bound DES keys 2^56
-  long mylower, myupper;
+  unsigned long long upper = (1ULL << 24);
+  unsigned long long mylower, myupper;
   MPI_Status st;
   MPI_Request req;
-  int flag;
-  int ciphlen = strlen(cipher);
+  int ciphlen = sizeof(cipher) - 1;
   MPI_Comm comm = MPI_COMM_WORLD;
 
-  MPI_Init(NULL, NULL);
+  MPI_Init(&argc, &argv);
   MPI_Comm_size(comm, &N);
   MPI_Comm_rank(comm, &id);
 
-  int range_per_node = upper / N;
+  unsigned long long range_per_node = upper / N;
   mylower = range_per_node * id;
-  myupper = range_per_node * (id+1) -1;
-  if(id == N-1){
-    //compensar residuo
+  myupper = range_per_node * (id + 1) - 1;
+  if (id == N - 1)
     myupper = upper;
-  }
 
-  long found = 0;
+  unsigned long long found = 0;
+  MPI_Irecv(&found, 1, MPI_UNSIGNED_LONG_LONG, MPI_ANY_SOURCE, MPI_ANY_TAG, comm, &req);
 
-  MPI_Irecv(&found, 1, MPI_LONG, MPI_ANY_SOURCE, MPI_ANY_TAG, comm, &req);
+  printf("Rank %d: iniciando rango [%llu, %llu)\n", id, mylower, myupper);
 
-  for(int i = mylower; i<myupper && (found==0); ++i){
-    if(tryKey(i, (char *)cipher, ciphlen)){
+  for (unsigned long long i = mylower; i < myupper && (found == 0); ++i) {
+    if (tryKey(i, (char *)cipher, ciphlen)) {
       found = i;
-      for(int node=0; node<N; node++){
-        MPI_Send(&found, 1, MPI_LONG, node, 0, MPI_COMM_WORLD);
+      for (int node = 0; node < N; node++) {
+        MPI_Send(&found, 1, MPI_UNSIGNED_LONG_LONG, node, 0, MPI_COMM_WORLD);
       }
+      printf("Rank %d: encontró la clave %llu\n", id, found);
       break;
+    }
+    if ((i % 1000000) == 0) {
+      printf("Rank %d: probadas %llu claves...\n", id, i - mylower);
+      fflush(stdout);
     }
   }
 
-  if(id==0){
+  printf("Rank %d: terminó su bucle sin encontrar clave.\n", id);
+
+  unsigned long long global_found = 0;
+  MPI_Allreduce(&found, &global_found, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, comm);
+
+  if (global_found == 0) {
+    // nadie encontró la clave se cancela para evitar bloqueo
+    MPI_Cancel(&req);
+    MPI_Request_free(&req);
+    if (id == 0) {
+      printf("Nadie encontró la clave. cancelado Irecv y saliendo.\n");
+      fflush(stdout);
+    }
+  } else {
+    // alguien encontró la clave se espera el mensaje
+    if (id == 0) {
+      printf("Algún proceso encontró la clave, esperando MPI_Wait para recibir valor...\n");
+      fflush(stdout);
+    }
     MPI_Wait(&req, &st);
-    decrypt(found, (char *)cipher, ciphlen);
-    printf("%li %s\n", found, cipher);
   }
 
+  // if (id == 0) {
+  //   printf("Rank 0: esperando resultado con MPI_Wait...\n");
+  //   MPI_Wait(&req, &st);
+  //    printf("Rank 0: terminó el MPI_Wait, valor encontrado = %llu\n", found);
+  //   decrypt(found, (char *)cipher, ciphlen);
+  //   printf("Clave encontrada: %llu\nTexto: %s\n", found, cipher);
+  // }
+  if (id == 0 && global_found != 0) {
+    decrypt(global_found, (char *)cipher, ciphlen);
+    printf("Clave encontrada: %llu\nTexto: %s\n", (unsigned long long)global_found, cipher);
+    fflush(stdout);
+  } 
+
   MPI_Finalize();
+  return 0;
 }
