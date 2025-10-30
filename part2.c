@@ -172,9 +172,16 @@ int main(int argc, char **argv) {
     int global_found = 0;
     unsigned long long found_key = 0;
 
+    // contador local de claves probadas
+    unsigned long long local_tested = 0;
+
     for (unsigned long long key = local_start_key; key < local_end_key && !global_found; key++) {
+        
+        // probar la clave
         memcpy(decrypted, encrypted, padded_len);
         des_ecb_encrypt_buffer(key, decrypted, padded_len, DES_DECRYPT);
+
+        local_tested++;
 
         if (contains_keyword((char *)decrypted, keyword)) {
             printf("Proceso %d encontró posible clave: %llu\n", rank, key);
@@ -191,20 +198,43 @@ int main(int argc, char **argv) {
             }
         }
 
-        if (key % 10000000 == 0)
-            printf("Proceso %d: probando clave %llu\n", rank, key);
+        if ((key - local_start_key) % 10000000 == 0) {
+            double elapsed_now = MPI_Wtime() - start_time;
+            double rate_now = (local_tested > 0 && elapsed_now > 0.0) ? (double)local_tested / elapsed_now : 0.0;
+            // printf("Proceso %d: probadas %llu claves, rate local ≈ %.2f keys/s (elapsed %.2fs)\n",rank, local_tested, rate_now, elapsed_now);
+            fflush(stdout);
+        }
 
+        // sincronizar estado de termino entre procesos cada iteración
         MPI_Allreduce(MPI_IN_PLACE, &global_found, 1, MPI_INT, MPI_LOR, MPI_COMM_WORLD);
+
     }
 
     double end_time = MPI_Wtime();
+    double total_time = end_time - start_time;
+    double rate_local = (total_time > 0.0) ? (double)local_tested / total_time : 0.0;
+    
+    // Reducir para obtener totals y tiempo máximo
+    unsigned long long total_tested = 0;
+    double max_elapsed = 0.0;
+    MPI_Reduce(&local_tested, &total_tested, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&total_time, &max_elapsed, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
 
     if (rank == 0) {
+        
+        double rate_global = (max_elapsed > 0.0) ? (double)total_tested / max_elapsed : 0.0;
+
         if (global_found)
             printf("Clave encontrada: %llu\n", found_key);
         else
             printf("No se encontró la clave en el rango.\n");
-        printf("Tiempo total de ejecucion: %f segundos\n", end_time - start_time);
+
+        printf("== Metricas: ==\n");
+        printf("Tiempo total de ejecucion: %f segundos\n", total_time);
+        printf("Total claves probadas : %llu\n", total_tested); //suma de todos los procesos
+        printf("Velocidad estimada: %.2f keys/s\n", rate_global);
+        printf("Max elapsed entre procesos: %.6f s\n", max_elapsed);
+        printf("===============\n");
     }
 
     free(ptext);
