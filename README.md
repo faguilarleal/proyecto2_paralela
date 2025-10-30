@@ -20,6 +20,7 @@ mpirun -np 4 ./br
 Compilar
 ```cmd
 mpicc part2.c -o part2 -lcrypto
+
 ```
 
 Crear o sobreescribir el archivo msg
@@ -27,22 +28,7 @@ Crear o sobreescribir el archivo msg
 echo -n "Esta es una prueba de proyecto 2" > msg.txt
 ```
 
-Cifrar con clave 42
+
 ```cmd
-./part2 encrypt msg.txt msg.enc 42
+mpirun -np 4 ./part2 123456L 42
 ```
-
-
-Decifrar con clave
-```cmd
-./part2 decrypt msg.enc msg.dec.txt 42
-```
-
-
-Verificar el contenido
-```cmd
-cat msg.dec.txt
-```
-
-
-

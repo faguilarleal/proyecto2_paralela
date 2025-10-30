@@ -4,6 +4,7 @@
 #include <string.h>
 #include <openssl/des.h>
 #include <mpi.h>
+#include <errno.h> 
 
 // cifrado
 static void key_from_ull(unsigned long long key, DES_cblock *k_out) {
@@ -46,7 +47,7 @@ int main(int argc, char **argv) {
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    if (argc != 2) {
+    if (argc < 2) {
         if (rank == 0)
             printf("Uso: %s <clave inicial>\n", argv[0]);
         MPI_Finalize();
@@ -70,7 +71,44 @@ int main(int argc, char **argv) {
     unsigned long long start_key = strtoull(argv[1], NULL, 10);
     
     //unsigned long long range = 1000000000ULL;  // 1e9
-    unsigned long long range = (1ULL << 56);
+    // unsigned long long range = (1ULL << 56);
+
+    // default si no se pasa argv[2]
+    unsigned long long range = 1000000000ULL; // fallback 1e9 (opcional)
+
+    if (argc >= 3) {
+        errno = 0;
+        char *endptr = NULL;
+        unsigned long long v = strtoull(argv[2], &endptr, 10);
+        if (errno != 0 || endptr == NULL || *endptr != '\0') {
+            if (rank == 0) fprintf(stderr, "Argumento inválido para rango/bits: '%s'\n", argv[2]);
+            MPI_Finalize();
+            return 1;
+        }
+
+        if (v == 0) {
+            if (rank == 0) fprintf(stderr, "Segundo argumento no puede ser 0\n");
+            MPI_Finalize();
+            return 1;
+        }
+
+        if (v <= 63) {
+            // numero de bits: range = 2^v
+            if (v > 56 && rank == 0) {
+                fprintf(stderr, "Advertencia: está pidiendo %llu bits; DES efectivo usa 56 bits y esto puede ser impráctico.\n", v);
+            }
+            if (v >= 64) {
+                if (rank == 0) fprintf(stderr, "Bits >= 64 no son soportados de forma segura.\n");
+                MPI_Finalize();
+                return 1;
+            }
+            range = (1ULL << v);
+        } else {
+            //cantidad de claves
+            range = v;
+        }
+
+    }
     unsigned long long range_per_process = range / size;
 
     unsigned long long local_start_key = start_key + rank * range_per_process;
