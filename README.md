@@ -18,8 +18,10 @@ mpirun -np 4 ./br
 ## Parte B
 
 Descripcion del programa: 
-implementa brute force sobre un texto cifrado con el algoritmo des en modo ECB (), utilizando MPI para distribuir el trabajo entre varios procesos. 
+implementa brute force sobre un texto cifrado con el algoritmo des en modo ECB (Electronic Codebook), utilizando MPI (Message Passing Interface) para distribuir el trabajo entre varios procesos. 
 Y cada proceso prueba un rango distinto de las llaves hasta que llegue a encontrar aquella que logre descifrar correctamente el texto original. 
+
+ECB: es el modo de operacion mas simplel de un cifrador por bloques, en donde cada bloque de datos se cifra de manera independiente con la misma clave.  
 
 Compilar
 ```cmd
@@ -43,3 +45,6 @@ correr todo de una vez
 mpicc part2.c -o part2 -lcrypto &&  mpirun -np 4 ./part2 123456L 42
 ```
 
+Nota Importante:
+DES usa 56 bits efectivos (los otros 8 son de paridad).
+Por eso, aunque usamos un entero de 64 bits, solo 56 bits son realmente utilizados para el cifrado.

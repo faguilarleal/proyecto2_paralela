@@ -1,18 +1,39 @@
+// Parte B
 // para cifrar/descifrar archivos con DES (ECB)
+// librerias
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <openssl/des.h>
-#include <mpi.h>
+#include <mpi.h> //paraleliza el programa para distribuir la carga entre varios porcesos
 #include <errno.h> 
 
 // cifrado
+
+/*
+Convierte numero -> clave DES válida
+
+Convierte una clave numerica de 64 bits en una estructuea DES_cblock de 8 bytes , 
+que es el formato que requiere OpenSSL para cifrar o descifrar con DES
+*/
 static void key_from_ull(unsigned long long key, DES_cblock *k_out) {
     for (int i = 0; i < 8; i++)
         (*k_out)[7 - i] = (key >> (i * 8)) & 0xFF;
+    //ajusta los bits de paiedad como el estandar de des
     DES_set_odd_parity(k_out);
 }
 
+/*
+Aplica DES (ECB) bloque a bloque
+
+Cifra o descifra un bloque de datos usando DES en modo ECB
+
+Parámetros:
+key: clave numérica a probar.
+buf: puntero al buffer con el texto (entrada/salida).
+len: longitud del buffer (múltiplo de 8).
+mode: DES_ENCRYPT o DES_DECRYPT.
+*/
 void des_ecb_encrypt_buffer(unsigned long long key, unsigned char *buf, size_t len, int mode) {
     DES_cblock k;
     DES_key_schedule schedule;
@@ -23,7 +44,9 @@ void des_ecb_encrypt_buffer(unsigned long long key, unsigned char *buf, size_t l
         DES_ecb_encrypt((DES_cblock *)(buf + i), (DES_cblock *)(buf + i), &schedule, mode);
 }
 
-
+/*
+Padding: Asegura que el texto sea múltiplo de 8 bytes
+*/
 unsigned char *pad_buffer(const unsigned char *in, size_t in_len, size_t *out_len) {
     size_t pad = (8 - (in_len % 8)) % 8;
     *out_len = in_len + pad;
@@ -35,11 +58,17 @@ unsigned char *pad_buffer(const unsigned char *in, size_t in_len, size_t *out_le
     return out;
 }
 
+/*
+Detecta si el texto descifrado contiene la frase clave
+*/
 int contains_keyword(const char *text, const char *keyword) {
     return strstr(text, keyword) != NULL;
 }
 
 
+/*
+Lee texto, cifra, reparte trabajo MPI, busca la clave y mide tiempos
+*/
 int main(int argc, char **argv) {
     MPI_Init(&argc, &argv);
 
@@ -74,8 +103,9 @@ int main(int argc, char **argv) {
     // unsigned long long range = (1ULL << 56);
 
     // default si no se pasa argv[2]
-    unsigned long long range = 1000000000ULL; // fallback 1e9 (opcional)
+    unsigned long long range = (1ULL << 42); //default si no hay nada
 
+    // en el caso que si hayan 3 argumentos
     if (argc >= 3) {
         errno = 0;
         char *endptr = NULL;
