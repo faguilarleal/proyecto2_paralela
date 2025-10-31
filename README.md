@@ -6,6 +6,11 @@ sudo apt install -y libssl-dev openmpi-bin libopenmpi-dev
 
 ## Parte A
 
+Secuencial
+```cmd
+gcc -o des_sequential des_sequential.c -lssl -lcrypto
+```
+
 ```cmd
 mpicc br.c -lssl -lcrypto -o br
 ```
