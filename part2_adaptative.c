@@ -304,6 +304,8 @@ int main(int argc, char **argv) {
 
     const char *keyword = "es una prueba de";
     unsigned long long start_key = strtoull(argv[1], NULL, 10);
+    unsigned long long enc_key = start_key;
+    if (argc >= 5) enc_key = strtoull(argv[4], NULL, 10);
     unsigned long long range = (1ULL << 56);
     double timeout_seconds = 0.0;  // 0 = sin timeout
 
@@ -349,7 +351,7 @@ int main(int argc, char **argv) {
     // Cifrar texto original (solo proceso 0/master)
     if (rank == 0) {
         memcpy(encrypted, ptext, padded_len);
-        des_ecb_encrypt_buffer(start_key, encrypted, padded_len, DES_ENCRYPT);
+        des_ecb_encrypt_buffer(enc_key, encrypted, padded_len, DES_ENCRYPT);
     }
 
     // Compartir datos a todos los procesos

@@ -61,12 +61,21 @@ usados para las pruebas
 mpicc -o adaptive_search part2_adaptative.c -lssl -lcrypto
 
 # facil
+#a
+mpirun -np 4 ./part2_hybrid 123456L 56 100000 60
+#d
 mpirun -np 4 ./part2_hybrid 36028797018900000 56 100000 60
 
 #media 
+#b
+ mpirun -np 4 ./part2_hybrid 18014398509431983 56 100000 60
+#e
  mpirun -np 4 ./part2_hybrid 45035996273650000 56 100000 60
 
-# Llave difícil con timeout
+# Llave difícil
+#c
+ mpirun -np 4 ./part2_hybrid 18014398508481985 10000000 100000 60
+#f
 mpirun -np 4 ./part2_hybrid 15837603060973172 10000000 100000 60
 ```
 
@@ -77,7 +86,7 @@ Compilar y correr part2_adaptative.c
 mpicc -o adaptive_search part2_adaptative.c -lssl -lcrypto
 
 # Sin timeout (busca hasta encontrar o agotar rango)
-mpirun -np 4 ./adaptive_search 123456 10000000
+mpirun -np 4 ./adaptive_search 123456 10000000 60 123456
 
 # Con timeout de 30 segundos
 mpirun -np 4 ./adaptive_search 123456 10000000 30
@@ -91,12 +100,22 @@ usados para las pruebas
 mpicc -o adaptive_search part2_adaptative.c -lssl -lcrypto
 
 # facil
+#a
+mpirun -np 4 ./adaptive_search 0 1000000 60 123456
+#d
 mpirun -np 4 ./adaptive_search 36028797018913969 1000000 60 36028797018963969
 
-#media 
+#media
+#b
+mpirun -np 4 ./adaptive_search 18014398509431983 1000000 60 18014398509481983
+
+#e
 mpirun -np 4 ./adaptive_search 45035996273654960 1000000 60 45035996273704960
 
-# Llave difícil con timeout
+# Llave difícil
+#c
+mpirun -np 4 ./adaptive_search 18014398499481985 10000000 60 18014398509481984
+#f
 mpirun -np 4 ./adaptive_search 15837603060973173 10000000 60 1583760307097317
 ```
 
