@@ -38,6 +38,19 @@ static void key_from_ull(unsigned long long key, DES_cblock *k_out) {
 }
 
 /*
+Aplicar DES (ECB) bloque a bloque
+*/
+void des_ecb_encrypt_buffer(unsigned long long key, unsigned char *buf, size_t len, int mode) {
+    DES_cblock k;
+    DES_key_schedule schedule;
+    key_from_ull(key, &k);
+    DES_set_key_unchecked(&k, &schedule);
+
+    for (size_t i = 0; i < len; i += 8)
+        DES_ecb_encrypt((DES_cblock *)(buf + i), (DES_cblock *)(buf + i), &schedule, mode);
+}
+
+/*
 Padding: Asegura que el texto sea múltiplo de 8 bytes
 */
 unsigned char *pad_buffer(const unsigned char *in, size_t in_len, size_t *out_len) {
@@ -256,7 +269,14 @@ void worker_adaptive_search(int rank, unsigned char *encrypted, size_t padded_le
                rank, local_tested);
     }
     
-   
+    // Limpiar solicitud pendiente
+    int done = 0;
+    MPI_Test(&found_req, &done, MPI_STATUS_IGNORE);
+    if (!done) {
+        MPI_Cancel(&found_req);
+        MPI_Request_free(&found_req);
+    }
+    
     printf("Worker %d: Finalizando. Total de claves probadas: %llu\n", rank, local_tested);
 }
 
