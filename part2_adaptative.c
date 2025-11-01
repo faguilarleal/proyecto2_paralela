@@ -75,7 +75,8 @@ MASTER: Gestiona la distribución dinámica de trabajo
 void master_adaptive_search(int size, unsigned long long total_range, 
                            unsigned long long start_key,
                            unsigned char *encrypted, size_t padded_len,
-                           const char *keyword, unsigned char *ptext) {
+                           const char *keyword, unsigned char *ptext,
+                           double timeout_seconds, unsigned long long *found_key_out) {
     
     // Inicializar bloques de trabajo
     unsigned long long block_size = INITIAL_BLOCK_SIZE;
@@ -86,10 +87,7 @@ void master_adaptive_search(int size, unsigned long long total_range,
     int active_workers = size - 1;
     int *worker_status = calloc(size, sizeof(int)); // 0=idle, 1=working
     
-    printf("\n=== ADAPTIVE SEARCH (MASTER-WORKER) ===\n");
-    printf("Rango total: %llu claves\n", total_range);
-    printf("Tamaño de bloque inicial: %llu\n", block_size);
-    printf("Workers activos: %d\n\n", active_workers);
+    double start_time = MPI_Wtime();
     
     // Dar trabajo inicial a todos los workers
     for (int i = 1; i < size && current_pos < start_key + total_range; i++) {
@@ -102,15 +100,25 @@ void master_adaptive_search(int size, unsigned long long total_range,
         MPI_Send(block, 2, MPI_UNSIGNED_LONG_LONG, i, TAG_WORK_RESPONSE, MPI_COMM_WORLD);
         worker_status[i] = 1;
         current_pos = block[1];
-        
-        printf("Master: Asignado bloque inicial [%llu, %llu) a worker %d\n", 
-               block[0], block[1], i);
     }
     
     // Manejar solicitudes de trabajo dinámicamente
     while (active_workers > 0 && !found) {
         MPI_Status status;
         int message_available;
+        
+        // Verificar timeout
+        if (timeout_seconds > 0.0) {
+            double elapsed = MPI_Wtime() - start_time;
+            if (elapsed >= timeout_seconds) {
+                // Enviar terminación a todos
+                for (int i = 1; i < size; i++) {
+                    unsigned long long termination[2] = {0, 0};
+                    MPI_Send(termination, 2, MPI_UNSIGNED_LONG_LONG, i, TAG_TERMINATE, MPI_COMM_WORLD);
+                }
+                break;
+            }
+        }
         
         // Revisar si hay mensajes (no bloqueante)
         MPI_Iprobe(MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &message_available, &status);
@@ -137,13 +145,9 @@ void master_adaptive_search(int size, unsigned long long total_range,
                     worker_status[worker_rank] = 1;
                     current_pos = block[1];
                     
-                    printf("Master: Asignado bloque [%llu, %llu) a worker %d (adaptativo)\n", 
-                           block[0], block[1], worker_rank);
-                    
                     // Adaptar tamaño de bloque si es necesario
                     if (block_size < total_range / (size * 10)) {
                         block_size = (unsigned long long)(block_size * ADAPTATION_FACTOR);
-                        printf("Master: Tamaño de bloque aumentado a %llu\n", block_size);
                     }
                 } else {
                     // No hay más trabajo, enviar señal de terminación
@@ -151,8 +155,6 @@ void master_adaptive_search(int size, unsigned long long total_range,
                     MPI_Send(termination, 2, MPI_UNSIGNED_LONG_LONG, worker_rank, 
                             TAG_TERMINATE, MPI_COMM_WORLD);
                     active_workers--;
-                    printf("Master: Worker %d terminado. Workers activos: %d\n", 
-                           worker_rank, active_workers);
                 }
                 
             } else if (status.MPI_TAG == TAG_FOUND) {
@@ -161,8 +163,8 @@ void master_adaptive_search(int size, unsigned long long total_range,
                         TAG_FOUND, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
                 found = 1;
                 
-                printf("\n*** Master: Clave encontrada por worker %d: %llu ***\n", 
-                       status.MPI_SOURCE, found_key);
+                printf("Master: Clave encontrada %llu por rank %d\n", 
+                       found_key, status.MPI_SOURCE);
                 
                 // Notificar a todos los workers que terminen
                 for (int i = 1; i < size; i++) {
@@ -176,11 +178,7 @@ void master_adaptive_search(int size, unsigned long long total_range,
         }
     }
     
-    if (found) {
-        printf("\n=== CLAVE ENCONTRADA: %llu ===\n", found_key);
-    } else {
-        printf("\n=== No se encontró la clave en el rango ===\n");
-    }
+    *found_key_out = found_key;
     
     free(worker_status);
 }
@@ -189,7 +187,8 @@ void master_adaptive_search(int size, unsigned long long total_range,
 WORKER: Procesa bloques de trabajo dinámicamente
 */
 void worker_adaptive_search(int rank, unsigned char *encrypted, size_t padded_len,
-                           const char *keyword, unsigned char *ptext) {
+                           const char *keyword, unsigned char *ptext,
+                           unsigned long long *local_tested_out) {
     
     unsigned long long local_tested = 0;
     unsigned long long found_key = 0;
@@ -221,9 +220,6 @@ void worker_adaptive_search(int rank, unsigned char *encrypted, size_t padded_le
         unsigned long long start = block[0];
         unsigned long long end = block[1];
         
-        printf("Worker %d: Procesando bloque [%llu, %llu) (%llu claves)\n", 
-               rank, start, end, end - start);
-        
         // Buscar en el bloque asignado
         for (unsigned long long key = start; key < end && should_continue; key++) {
             // Revisar periódicamente si otro proceso encontró la clave
@@ -233,8 +229,6 @@ void worker_adaptive_search(int rank, unsigned char *encrypted, size_t padded_le
                 if (got) {
                     found_key = found_msg;
                     should_continue = 0;
-                    printf("Worker %d: Notificado que clave fue encontrada: %llu\n", 
-                           rank, found_key);
                     break;
                 }
             }
@@ -254,9 +248,6 @@ void worker_adaptive_search(int rank, unsigned char *encrypted, size_t padded_le
                     found_key = key;
                     should_continue = 0;
                     
-                    printf("\n*** Worker %d: CLAVE ENCONTRADA: %llu ***\n", rank, key);
-                    printf("Worker %d: Claves probadas localmente: %llu\n", rank, local_tested);
-                    
                     // Notificar al master
                     MPI_Send(&found_key, 1, MPI_UNSIGNED_LONG_LONG, 0, TAG_FOUND, 
                             MPI_COMM_WORLD);
@@ -264,9 +255,6 @@ void worker_adaptive_search(int rank, unsigned char *encrypted, size_t padded_le
                 }
             }
         }
-        
-        printf("Worker %d: Bloque completado. Claves probadas en este bloque: %llu\n", 
-               rank, local_tested);
     }
     
     // Limpiar solicitud pendiente
@@ -277,7 +265,7 @@ void worker_adaptive_search(int rank, unsigned char *encrypted, size_t padded_le
         MPI_Request_free(&found_req);
     }
     
-    printf("Worker %d: Finalizando. Total de claves probadas: %llu\n", rank, local_tested);
+    *local_tested_out = local_tested;
 }
 
 int main(int argc, char **argv) {
@@ -296,7 +284,7 @@ int main(int argc, char **argv) {
 
     if (argc < 2) {
         if (rank == 0)
-            printf("Uso: %s <clave_inicial> [rango_bits_o_cantidad]\n", argv[0]);
+            printf("Uso: %s <clave_inicial> [rango_bits_o_cantidad] [timeout_seg]\n", argv[0]);
         MPI_Finalize();
         return 1;
     }
@@ -317,6 +305,7 @@ int main(int argc, char **argv) {
     const char *keyword = "es una prueba de";
     unsigned long long start_key = strtoull(argv[1], NULL, 10);
     unsigned long long range = (1ULL << 56);
+    double timeout_seconds = 0.0;  // 0 = sin timeout
 
     if (argc >= 3) {
         errno = 0;
@@ -342,6 +331,13 @@ int main(int argc, char **argv) {
             range = v;
         }
     }
+    
+    // Timeout opcional
+    if (argc >= 4) {
+        timeout_seconds = atof(argv[3]);
+        if (rank == 0 && timeout_seconds > 0)
+            printf("Timeout configurado: %.1f segundos\n", timeout_seconds);
+    }
 
     // Preparar buffers
     unsigned char encrypted[256];
@@ -354,15 +350,6 @@ int main(int argc, char **argv) {
     if (rank == 0) {
         memcpy(encrypted, ptext, padded_len);
         des_ecb_encrypt_buffer(start_key, encrypted, padded_len, DES_ENCRYPT);
-        
-        printf("\n=== CONFIGURACIÓN ===\n");
-        printf("Texto original: %s\n", text);
-        printf("Palabra clave a buscar: '%s'\n", keyword);
-        printf("Clave real: %llu\n", start_key);
-        printf("Texto cifrado (primeros 32 bytes): ");
-        for (size_t i = 0; i < (padded_len < 32 ? padded_len : 32); i++)
-            printf("%02X ", encrypted[i]);
-        printf("\n");
     }
 
     // Compartir datos a todos los procesos
@@ -371,22 +358,54 @@ int main(int argc, char **argv) {
 
     // Iniciar búsqueda adaptativa
     double start_time = MPI_Wtime();
+    unsigned long long local_tested = 0;
+    unsigned long long found_key = 0;
 
     if (rank == 0) {
         // Master coordina la distribución de trabajo
-        master_adaptive_search(size, range, start_key, encrypted, padded_len, keyword, ptext);
+        master_adaptive_search(size, range, start_key, encrypted, padded_len, keyword, ptext, 
+                             timeout_seconds, &found_key);
     } else {
         // Workers procesan bloques dinámicamente
-        worker_adaptive_search(rank, encrypted, padded_len, keyword, ptext);
+        worker_adaptive_search(rank, encrypted, padded_len, keyword, ptext, &local_tested);
     }
 
     double end_time = MPI_Wtime();
+    double total_time = end_time - start_time;
+    
+    // Recolectar métricas
+    unsigned long long total_tested = 0;
+    double max_elapsed = 0.0;
+    
+    MPI_Reduce(&local_tested, &total_tested, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&total_time, &max_elapsed, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
 
     if (rank == 0) {
-        printf("\n=== MÉTRICAS FINALES ===\n");
-        printf("Tiempo total de ejecución: %.6f segundos\n", end_time - start_time);
-        printf("Procesos utilizados: %d (1 master + %d workers)\n", size, size - 1);
-        printf("======================\n");
+        double rate = max_elapsed > 0.0 ? (double)total_tested / max_elapsed : 0.0;
+        
+        printf("== Métricas ==\n");
+        printf("Tiempo total de ejecucion (max entre procesos): %.2f s\n", max_elapsed);
+        printf("Tiempo total de ejecucion: %.2f s\n", total_time);
+        printf("Total claves probadas: %llu\n", total_tested);
+        printf("Velocidad estimada: %.2f keys/s\n", rate);
+        
+        if (found_key > 0) {
+            // Descifrar con la clave encontrada
+            unsigned char final_dec[256];
+            memcpy(final_dec, encrypted, padded_len);
+            des_ecb_encrypt_buffer(found_key, final_dec, padded_len, DES_DECRYPT);
+            
+            // Asegurar terminación de string
+            final_dec[text_len] = '\0';
+            
+            printf("Resultado: Clave encontrada = %llu\n", found_key);
+            printf("Texto descifrado: %s\n", (char*)final_dec);
+        } else if (timeout_seconds > 0.0 && total_time >= timeout_seconds) {
+            printf("Resultado: TIMEOUT (%.0f s)\n", timeout_seconds);
+        } else {
+            printf("Resultado: Rango agotado sin clave.\n");
+        }
+        printf("===============\n");
     }
 
     free(ptext);

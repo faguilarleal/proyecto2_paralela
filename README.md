@@ -62,14 +62,14 @@ Compilar y correr part2_adaptative.c
 ```cmd
 mpicc -o adaptive_search part2_adaptative.c -lssl -lcrypto
 
-# Llave fácil (encontrada rápido)
+# Sin timeout (busca hasta encontrar o agotar rango)
 mpirun -np 4 ./adaptive_search 123456 10000000
 
-# Llave mediana (2^56/2 + 2^56/8)
-mpirun -np 4 ./adaptive_search 11258999068426240 20000000
+# Con timeout de 30 segundos
+mpirun -np 4 ./adaptive_search 123456 10000000 30
 
-# Llave difícil (posición impredecible)
-mpirun -np 8 ./adaptive_search 18014398509481984 50000000
+# Llave difícil con timeout
+mpirun -np 4 ./adaptive_search 18014398509481984 50000000 60
 ```
 
 
