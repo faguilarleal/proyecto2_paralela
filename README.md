@@ -57,6 +57,22 @@ mpicc -fopenmp part2_hybrid.c -o part2_hybrid -lcrypto && mpirun -np 4 ./part2_h
 ```
 
 
+
+Compilar y correr part2_adaptative.c
+```cmd
+mpicc -o adaptive_search adaptive_search.c -lssl -lcrypto
+
+# Llave fácil (encontrada rápido)
+mpirun -np 4 ./adaptive_search 123456 10000000
+
+# Llave mediana (2^56/2 + 2^56/8)
+mpirun -np 4 ./adaptive_search 11258999068426240 20000000
+
+# Llave difícil (posición impredecible)
+mpirun -np 8 ./adaptive_search 18014398509481984 50000000
+```
+
+
 Nota Importante:
 DES usa 56 bits efectivos (los otros 8 son de paridad).
 Por eso, aunque usamos un entero de 64 bits, solo 56 bits son realmente utilizados para el cifrado.
