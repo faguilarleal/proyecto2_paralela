@@ -36,15 +36,33 @@ void encrypt(unsigned long long key, char *ciph, int len) {
   }
 }
 
-char search[] = " the ";
 int tryKey(unsigned long long key, char *ciph, int len) {
   char temp[len + 1];
   memcpy(temp, ciph, len);
   temp[len] = 0;
   decrypt(key, temp, len);
-  return strstr(temp, search) != NULL;
+  
+  // Buscar diferentes variantes de "the"
+  if (strstr(temp, " the ") != NULL ||
+      strstr(temp, "the ") != NULL ||
+      strstr(temp, " the") != NULL ||
+      strstr(temp, "The ") != NULL ||
+      strstr(temp, " The") != NULL) {
+    return 1;
+  }
+  
+  int printable = 0;
+  for(int i = 0; i < len; i++) {
+    if((temp[i] >= 32 && temp[i] <= 126) || temp[i] == '\n' || temp[i] == '\t')
+      printable++;
+  }
+  
+  if(printable > len * 0.85) {
+    return 1;
+  }
+  
+  return 0;
 }
-
 unsigned char cipher[] = {
   108, 245, 65, 63, 125, 200, 150, 66,
   17, 170, 207, 170, 34, 31, 70, 215, 0
@@ -111,16 +129,10 @@ int main(int argc, char *argv[]) {
     MPI_Wait(&req, &st);
   }
 
-  // if (id == 0) {
-  //   printf("Rank 0: esperando resultado con MPI_Wait...\n");
-  //   MPI_Wait(&req, &st);
-  //    printf("Rank 0: terminó el MPI_Wait, valor encontrado = %llu\n", found);
-  //   decrypt(found, (char *)cipher, ciphlen);
-  //   printf("Clave encontrada: %llu\nTexto: %s\n", found, cipher);
-  // }
+
   if (id == 0 && global_found != 0) {
     decrypt(global_found, (char *)cipher, ciphlen);
-    printf("Clave encontrada: %llu\nTexto: %s\n", (unsigned long long)global_found, cipher);
+    printf("Clave encontrada: %llu\n", (unsigned long long)global_found);
     fflush(stdout);
   } 
 
