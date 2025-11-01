@@ -11,6 +11,8 @@
 // cifrado
 
 /*
+Conversión de entero a clave DES
+
 Convierte numero -> clave DES válida
 
 Convierte una clave numerica de 64 bits en una estructuea DES_cblock de 8 bytes , 
@@ -46,6 +48,7 @@ void des_ecb_encrypt_buffer(unsigned long long key, unsigned char *buf, size_t l
 
 /*
 Padding: Asegura que el texto sea múltiplo de 8 bytes
+rellena con 0s al final del texto si lo necesita
 */
 unsigned char *pad_buffer(const unsigned char *in, size_t in_len, size_t *out_len) {
     size_t pad = (8 - (in_len % 8)) % 8;

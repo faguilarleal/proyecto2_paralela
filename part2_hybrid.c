@@ -1,3 +1,4 @@
+// Parte B: enfoque hibrido de paralelismo distribuido y compartido con maestro-trabajador
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -5,13 +6,16 @@
 #include <mpi.h>
 #include <omp.h>
 
-#define REQ_TAG 1
-#define WORK_TAG 2
-#define STOP_TAG 3
-#define FOUND_TAG 4
-#define CHECK_EVERY 1024UL
+//etiquetas 
+#define REQ_TAG 1 // para que el worker pida trabajo
+#define WORK_TAG 2 // para que el master envie un rango de claves
+#define STOP_TAG 3 // señal para detener todos los procesos
+#define FOUND_TAG 4 //un worker encontro la clave
+#define CHECK_EVERY 1024UL  //comprobar cada cierto número de iteraciones si se debe de detener por timeout o clave encontrada
 
 /*
+Conversión de entero a clave DES
+
 Convierte numero -> clave DES válida
 
 Convierte una clave numerica de 64 bits en una estructuea DES_cblock de 8 bytes , 
@@ -44,20 +48,33 @@ void des_ecb_encrypt_buffer(unsigned long long key, unsigned char *buf, size_t l
 
 /*
 Padding: Asegura que el texto sea múltiplo de 8 bytes
+rellena con 0s al final del texto si lo necesita
 */
 unsigned char *pad_buffer(const unsigned char *in, size_t in_len, size_t *out_len) {
     size_t pad = (8 - (in_len % 8)) % 8;
     *out_len = in_len + pad;
     unsigned char *out = malloc(*out_len);
-    if (!out) { perror("malloc"); exit(1); }
+
+    if (!out) { 
+        perror("malloc"); 
+        exit(1); 
+    }
+
     memcpy(out, in, in_len);
     if (pad) memset(out + in_len, 0, pad);
     return out;
 }
 
-/* búsqueda segura de keyword dentro de un buffer binario (no depende de '\0') */
+/* 
+Busqueda binaria de la palabra clave
+
+Busca una frase dentro del texto descifrado, sin depender de \0
+verifica si el texto descifrado tiene la palabra conocida que en este caso es es una prueba de
+
+ */
 int contains_keyword_bin(const unsigned char *buf, size_t buf_len, const char *keyword, size_t key_len) {
     if (key_len == 0 || buf_len < key_len) return 0;
+
     for (size_t i = 0; i + key_len <= buf_len; ++i) {
         if (memcmp(buf + i, keyword, key_len) == 0) return 1;
     }
@@ -65,11 +82,14 @@ int contains_keyword_bin(const unsigned char *buf, size_t buf_len, const char *k
 }
 
 int main(int argc, char **argv) {
-    MPI_Init(&argc, &argv);
-    int rank, size; 
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    MPI_Comm_size(MPI_COMM_WORLD, &size);
 
+    // inicialización de MPI
+    MPI_Init(&argc, &argv); //iniciar el entorno
+    int rank, size; 
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank); //rank: obtiene el id del identificador del proceso
+    MPI_Comm_size(MPI_COMM_WORLD, &size); //size: obtiene el num total de procesos
+
+    //validacion de argumentos
     if (argc < 3) {
         if (rank == 0)
             printf("Uso: %s <start_key> <bits_or_range> [chunk_size] [timeout_seconds]\n", argv[0]);
@@ -77,23 +97,38 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    unsigned long long start_key = strtoull(argv[1], NULL, 10);
-    unsigned long long v = strtoull(argv[2], NULL, 10);
+    //clave inicial
+    unsigned long long start_key = strtoull(argv[1], NULL, 10); 
+    // el arg
+    unsigned long long v = strtoull(argv[2], NULL, 10); 
+    // si es menor que 63 se interpreta como un numero de bits 2^v sino ocomo rango
     unsigned long long range = (v <= 63) ? (1ULL << v) : v;
+    //tamaño del bloque de claves por trabajador
     unsigned long long chunk_size = (argc >= 4) ? strtoull(argv[3], NULL, 10) : 1000000ULL;
+    //tiempo máximo permitido
     double timeout_seconds = (argc >= 5) ? atof(argv[4]) : 0.0;
 
     /* Master lee msg.txt y prepara datos */
-    char text[256] = {0};
-    size_t text_len = 0;
-    size_t padded_len = 0;
-    unsigned char *ptext = NULL;
-    unsigned char encrypted[256];
-    memset(encrypted, 0, sizeof(encrypted));
 
+    // Buffers para texto y cifrado
+    char text[256] = {0}; // texto original
+    size_t text_len = 0; // longitud del texto original
+    size_t padded_len = 0;   // longitud con padding
+    unsigned char *ptext = NULL; // texto con padding
+    unsigned char encrypted[256]; // texto cifrado
+
+    // inicializa el buffer cifrado
+    memset(encrypted, 0, sizeof(encrypted) );
+
+    //reserva buffers para el texto og y el cifrado
     if (rank == 0) {
         FILE *f = fopen("msg.txt","r");
-        if (!f) { perror("msg.txt"); MPI_Finalize(); return 1; }
+        // Error si no existe
+        if (!f) { 
+            perror("msg.txt"); 
+            MPI_Finalize(); 
+            return 1; 
+        }
         if (!fgets(text, sizeof(text), f)) { 
             fprintf(stderr,"msg.txt vacio o error\n"); 
             fclose(f); 
@@ -101,10 +136,12 @@ int main(int argc, char **argv) {
             return 1; 
         }
         fclose(f);
-        /* quitar '\n' final si existe */
+
+        // eliminar el salto de linea si existe
         text_len = strlen(text);
         if (text_len && text[text_len - 1] == '\n') { text[--text_len] = '\0'; }
-
+        
+        // Aplica padding para que sea múltiplo de 8 bytes
         ptext = pad_buffer((unsigned char *)text, text_len, &padded_len);
         if (padded_len > sizeof(encrypted)) {
             fprintf(stderr, "Texto demasiado largo (max %zu)\n", sizeof(encrypted));
@@ -113,35 +150,49 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        /* master cifra el plaintext con start_key para crear el "encrypted" de prueba */
+        /* master cifra el plaintext con start_key para crear el "encrypted" */
+        // Cifra el texto con la clave inicial
         memcpy(encrypted, ptext, padded_len);
         des_ecb_encrypt_buffer(start_key, encrypted, padded_len, DES_ENCRYPT);
     }
 
-    /* Broadcast: primero padded_len y text_len, luego el buffer cifrado (solo padded_len bytes) */
+    // Broadcast: envía a todos los procesos la longitud y el texto cifrado
     unsigned long long b_padded_len = padded_len;
     unsigned long long b_text_len = text_len;
+    // longitud con padding
     MPI_Bcast(&b_padded_len, 1, MPI_UNSIGNED_LONG_LONG, 0, MPI_COMM_WORLD);
+    // longitud original
     MPI_Bcast(&b_text_len, 1, MPI_UNSIGNED_LONG_LONG, 0, MPI_COMM_WORLD);
     padded_len = (size_t)b_padded_len;
     text_len = (size_t)b_text_len;
 
     /* ahora broadcast del buffer cifrado (usar padded_len como count) */
+
+    // Texto cifrado
     MPI_Bcast(encrypted, (int)padded_len, MPI_UNSIGNED_CHAR, 0, MPI_COMM_WORLD);
 
+    // Marca tiempo inicial
     double start_time = MPI_Wtime();
+    // claves probadas por este proceso
     unsigned long long local_tested = 0ULL;
+    // clave encontrada
     unsigned long long found_key = 0ULL;
+    // bandera de éxito
     int found = 0;
 
+    /* MASTER */
     if (rank == 0) {
-        /* MASTER */
+        
+        //próxima posición en el rango
         unsigned long long next = 0;
+        // número de workers activos
         int workers_active = size - 1;
         MPI_Status st;
 
+        // Verifica timeout
         while (workers_active > 0) {
             double now = MPI_Wtime();
+
             if (timeout_seconds > 0.0 && (now - start_time) >= timeout_seconds) {
                 printf("Master: Timeout alcanzado (%.1f s). Enviando STOP a todos...\n", timeout_seconds);
                 for (int i = 1; i < size; i++)
@@ -149,22 +200,27 @@ int main(int argc, char **argv) {
                 break;
             }
 
+            // Recibe solicitud de trabajo
             int dummy;
             MPI_Recv(&dummy, 1, MPI_INT, MPI_ANY_SOURCE, REQ_TAG, MPI_COMM_WORLD, &st);
             int src = st.MPI_SOURCE;
 
+            // Si no hay más claves, envía STOP
             if (next >= range) {
                 MPI_Send(NULL, 0, MPI_UNSIGNED_LONG_LONG, src, STOP_TAG, MPI_COMM_WORLD);
                 workers_active--;
+
             } else {
+                // Calcula rango y lo envía al worker
                 unsigned long long s = start_key + next;
                 unsigned long long e = start_key + ((next + chunk_size < range) ? next + chunk_size : range);
                 unsigned long long rng[2] = {s, e};
+
                 MPI_Send(rng, 2, MPI_UNSIGNED_LONG_LONG, src, WORK_TAG, MPI_COMM_WORLD);
                 next += chunk_size;
             }
 
-            /* comprobar si algún worker notificó FOUND */
+            //comprobar si algún worker notificó founds/encontro la clave
             int flag = 0;
             MPI_Iprobe(MPI_ANY_SOURCE, FOUND_TAG, MPI_COMM_WORLD, &flag, &st);
             if (flag) {
@@ -179,20 +235,25 @@ int main(int argc, char **argv) {
             }
         }
     } else {
+
         /* WORKERS */
         MPI_Status st;
         unsigned long long rng[2];
 
         while (1) {
             int req = 1;
+            // Solicita trabajo
             MPI_Send(&req, 1, MPI_INT, 0, REQ_TAG, MPI_COMM_WORLD);
+            // Recibe rango
             MPI_Recv(rng, 2, MPI_UNSIGNED_LONG_LONG, 0, MPI_ANY_TAG, MPI_COMM_WORLD, &st);
+            // Si recibe STOP, termina
             if (st.MPI_TAG == STOP_TAG) break;
 
             unsigned long long s = rng[0], e = rng[1];
 
             int stop_omp = 0;
 
+            // Paralelismo con OpenMP para probar claves
             #pragma omp parallel shared(stop_omp)
             {
                 unsigned long long local_count = 0ULL;
@@ -204,9 +265,11 @@ int main(int argc, char **argv) {
 
                     unsigned char tmp[256];
                     memcpy(tmp, encrypted, padded_len);
+                    // Descifra con clave candidata
                     des_ecb_encrypt_buffer(key, tmp, padded_len, DES_DECRYPT);
                     local_count++;
-
+                    
+                    // Verifica timeout cada cierto número de iteraciones
                     if ((local_count % CHECK_EVERY) == 0) {
                         double now = MPI_Wtime();
                         if (timeout_seconds > 0.0 && (now - start_time) >= timeout_seconds) {
@@ -216,7 +279,8 @@ int main(int argc, char **argv) {
                             continue;
                         }
                     }
-
+                    
+                    // Busca la palabra clave en el texto descifrado
                     if (contains_keyword_bin(tmp, padded_len, "es una prueba de", strlen("es una prueba de"))) {
                         /* si aparenta contener la keyword, re-encriptar el plaintext original con esa clave y comparar con encrypted */
                         unsigned char reenc[256];
@@ -234,13 +298,16 @@ int main(int argc, char **argv) {
                 } /* fin for */
 
                 #pragma omp atomic
+                // Actualiza contador local
                 local_tested += local_count;
+
             } /* fin parallel */
 
             /* después de procesar rango, loop pide nuevo trabajo o STOP según master */
+
         } /* fin while worker loop */
 
-        /* NO Reduce aquí (se hace más abajo) */
+        /* no reduce aquí (se hace más abajo) */
     }
 
     /* reduce global de claves probadas */
@@ -252,6 +319,7 @@ int main(int argc, char **argv) {
     double max_elapsed = 0.0;
     MPI_Reduce(&total_time, &max_elapsed, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
 
+    // Solo el master muestra métricas y resultado
     if (rank == 0) {
         // double rate = total_time > 0 ? (double)total_tested / total_time : 0;
         double rate = max_elapsed > 0 ? (double)total_tested / max_elapsed : 0;
@@ -264,6 +332,7 @@ int main(int argc, char **argv) {
         printf("Velocidad estimada: %.2f keys/s\n", rate);
 
         if (found) {
+
             /* master descifra el texto con la clave encontrada y muestra solo los text_len bytes */
             unsigned char final_dec[256];
             memcpy(final_dec, encrypted, padded_len);
@@ -272,15 +341,17 @@ int main(int argc, char **argv) {
             if (text_len < sizeof(final_dec)) final_dec[text_len] = '\0';
             printf("Resultado: Clave encontrada = %llu\n", found_key);
             printf("Texto descifrado: %s\n", (char*)final_dec);
+
         } else if (timeout_seconds > 0.0 && total_time >= timeout_seconds) {
             printf("Resultado: TIMEOUT (%.0f s)\n", timeout_seconds);
+            
         } else {
             printf("Resultado: Rango agotado sin clave.\n");
         }
         printf("===============\n");
     }
 
-    if (ptext) free(ptext);
-    MPI_Finalize();
+    if (ptext) free(ptext);  // Libera memoria
+    MPI_Finalize();// Finaliza MPI
     return 0;
 }
