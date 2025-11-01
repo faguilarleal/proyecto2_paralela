@@ -56,6 +56,20 @@ Compilar y correr part2_hybrid.c
 mpicc -fopenmp part2_hybrid.c -o part2_hybrid -lcrypto && mpirun -np 4 ./part2_hybrid 18014398509481984L 56 100000 60
 ```
 
+usados para las pruebas
+```cmd
+mpicc -o adaptive_search part2_adaptative.c -lssl -lcrypto
+
+# facil
+mpirun -np 4 ./part2_hybrid 36028797018900000 56 100000 60
+
+#media 
+ mpirun -np 4 ./part2_hybrid 45035996273650000 56 100000 60
+
+# Llave difícil con timeout
+mpirun -np 4 ./part2_hybrid 15837603060973172 10000000 100000 60
+```
+
 
 
 Compilar y correr part2_adaptative.c
@@ -70,6 +84,20 @@ mpirun -np 4 ./adaptive_search 123456 10000000 30
 
 # Llave difícil con timeout
 mpirun -np 4 ./adaptive_search 18014398509481984 50000000 60
+```
+
+usados para las pruebas
+```cmd
+mpicc -o adaptive_search part2_adaptative.c -lssl -lcrypto
+
+# facil
+mpirun -np 4 ./adaptive_search 36028797018913969 1000000 60 36028797018963969
+
+#media 
+mpirun -np 4 ./adaptive_search 45035996273654960 1000000 60 45035996273704960
+
+# Llave difícil con timeout
+mpirun -np 4 ./adaptive_search 15837603060973173 10000000 60 1583760307097317
 ```
 
 
