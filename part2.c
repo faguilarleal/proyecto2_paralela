@@ -65,7 +65,6 @@ int contains_keyword(const char *text, const char *keyword) {
     return strstr(text, keyword) != NULL;
 }
 
-
 /*
 Lee texto, cifra, reparte trabajo MPI, busca la clave y mide tiempos
 */
@@ -78,12 +77,12 @@ int main(int argc, char **argv) {
 
     if (argc < 2) {
         if (rank == 0)
-            printf("Uso: %s <clave inicial>\n", argv[0]);
+            printf("Uso: %s <clave inicial> [rango_bits_o_cantidad]\n", argv[0]);
         MPI_Finalize();
         return 1;
     }
 
-    // Leer texto original desde archivo
+    // Leer texto desde archivo
     FILE *file = fopen("msg.txt", "r");
     if (!file) {
         if (rank == 0) perror("Error al abrir msg.txt");
@@ -98,12 +97,12 @@ int main(int argc, char **argv) {
 
     const char *keyword = "es una prueba de";
     unsigned long long start_key = strtoull(argv[1], NULL, 10);
-    
+
     //unsigned long long range = 1000000000ULL;  // 1e9
     // unsigned long long range = (1ULL << 56);
 
     // default si no se pasa argv[2]
-    unsigned long long range = (1ULL << 42); //default si no hay nada
+    unsigned long long range = (1ULL << 56);
 
     // en el caso que si hayan 3 argumentos
     if (argc >= 3) {
@@ -139,12 +138,13 @@ int main(int argc, char **argv) {
         }
 
     }
-    unsigned long long range_per_process = range / size;
 
-    unsigned long long local_start_key = start_key + rank * range_per_process;
-    unsigned long long local_end_key = (rank == size - 1)
-                                         ? start_key + range
-                                         : local_start_key + range_per_process;
+    // Division del rango 
+    unsigned long long base = range / size;
+    unsigned long long resto = range % size;
+
+    unsigned long long local_start_key = start_key + rank * base + (rank < resto ? rank : resto);
+    unsigned long long local_end_key   = local_start_key + base + (rank < resto ? 1 : 0);
 
     unsigned char encrypted[256];
     unsigned char decrypted[256];
@@ -154,7 +154,7 @@ int main(int argc, char **argv) {
     size_t padded_len;
     unsigned char *ptext = pad_buffer((unsigned char *)text, text_len, &padded_len);
 
-    // Cifrar texto inicial (solo proceso 0)
+    //  Cifrar texto original (solo proceso 0) 
     if (rank == 0) {
         memcpy(encrypted, ptext, padded_len);
         des_ecb_encrypt_buffer(start_key, encrypted, padded_len, DES_ENCRYPT);
@@ -168,25 +168,38 @@ int main(int argc, char **argv) {
     MPI_Bcast(encrypted, 256, MPI_UNSIGNED_CHAR, 0, MPI_COMM_WORLD);
     MPI_Bcast(&padded_len, 1, MPI_UNSIGNED_LONG_LONG, 0, MPI_COMM_WORLD);
 
+    //  Búsqueda paralela 
     double start_time = MPI_Wtime();
-    int global_found = 0;
-    unsigned long long found_key = 0;
-
-    // contador local de claves probadas
     unsigned long long local_tested = 0;
+    unsigned long long found_key = 0;
+    int global_found = 0;
 
-    for (unsigned long long key = local_start_key; key < local_end_key && !global_found; key++) {
-        
-        // probar la clave
+    //  Postear recepción no bloqueante para notificación de clave encontrada
+    unsigned long long found_msg = 0;
+    MPI_Request found_req;
+    MPI_Irecv(&found_msg, 1, MPI_UNSIGNED_LONG_LONG, MPI_ANY_SOURCE, 0, MPI_COMM_WORLD, &found_req);
+
+    const unsigned long long POLL_INTERVAL = 10000ULL;
+
+    for (unsigned long long key = local_start_key; key < local_end_key; ++key) {
+        // Revisar cada cierto intervalo si otro proceso encontró la clave
+        if ((key - local_start_key) % POLL_INTERVAL == 0) {
+            int got = 0;
+            MPI_Test(&found_req, &got, MPI_STATUS_IGNORE);
+            if (got) {
+                found_key = found_msg;
+                global_found = 1;
+                break;
+            }
+        }
+
+        // Probar clave actual
         memcpy(decrypted, encrypted, padded_len);
         des_ecb_encrypt_buffer(key, decrypted, padded_len, DES_DECRYPT);
 
         local_tested++;
 
         if (contains_keyword((char *)decrypted, keyword)) {
-            printf("Proceso %d encontró posible clave: %llu\n", rank, key);
-            printf("Texto descifrado: %s\n", decrypted);
-
             unsigned char re_encrypted[256];
             memcpy(re_encrypted, ptext, padded_len);
             des_ecb_encrypt_buffer(key, re_encrypted, padded_len, DES_ENCRYPT);
@@ -195,33 +208,37 @@ int main(int argc, char **argv) {
                 found_key = key;
                 global_found = 1;
                 printf("Proceso %d confirmó la clave correcta: %llu\n", rank, key);
+                fflush(stdout);
+
+                // Notificar a todos los procesos
+                for (int dest = 0; dest < size; ++dest)
+                    MPI_Send(&found_key, 1, MPI_UNSIGNED_LONG_LONG, dest, 0, MPI_COMM_WORLD);
+                break;
             }
         }
-
-        if ((key - local_start_key) % 10000000 == 0) {
-            double elapsed_now = MPI_Wtime() - start_time;
-            double rate_now = (local_tested > 0 && elapsed_now > 0.0) ? (double)local_tested / elapsed_now : 0.0;
-            // printf("Proceso %d: probadas %llu claves, rate local ≈ %.2f keys/s (elapsed %.2fs)\n",rank, local_tested, rate_now, elapsed_now);
-            fflush(stdout);
-        }
-
-        // sincronizar estado de termino entre procesos cada iteración
-        MPI_Allreduce(MPI_IN_PLACE, &global_found, 1, MPI_INT, MPI_LOR, MPI_COMM_WORLD);
-
     }
 
+    // Limpiar
+    int done = 0;
+    MPI_Test(&found_req, &done, MPI_STATUS_IGNORE);
+    if (!done) {
+        MPI_Cancel(&found_req);
+        MPI_Request_free(&found_req);
+    } else if (found_msg && !global_found) {
+        found_key = found_msg;
+        global_found = 1;
+    }
+
+    // Métricas
     double end_time = MPI_Wtime();
     double total_time = end_time - start_time;
-    double rate_local = (total_time > 0.0) ? (double)local_tested / total_time : 0.0;
-    
-    // Reducir para obtener totals y tiempo máximo
     unsigned long long total_tested = 0;
     double max_elapsed = 0.0;
+
     MPI_Reduce(&local_tested, &total_tested, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
     MPI_Reduce(&total_time, &max_elapsed, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
 
     if (rank == 0) {
-        
         double rate_global = (max_elapsed > 0.0) ? (double)total_tested / max_elapsed : 0.0;
 
         if (global_found)
@@ -230,11 +247,11 @@ int main(int argc, char **argv) {
             printf("No se encontró la clave en el rango.\n");
 
         printf("== Metricas: ==\n");
-        printf("Tiempo total de ejecucion: %f segundos\n", total_time);
-        printf("Total claves probadas : %llu\n", total_tested); //suma de todos los procesos
+        printf("Tiempo total de ejecución: %.6f segundos\n", total_time);
+        printf("Total de claves probadas: %llu\n", total_tested);
         printf("Velocidad estimada: %.2f keys/s\n", rate_global);
-        printf("Max elapsed entre procesos: %.6f s\n", max_elapsed);
-        printf("===============\n");
+        printf("Máx. tiempo entre procesos: %.6f s\n", max_elapsed);
+        printf("================\n");
     }
 
     free(ptext);
