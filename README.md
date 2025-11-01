@@ -41,14 +41,21 @@ echo -n "Esta es una prueba de proyecto 2" > msg.txt
 
 
 ```cmd
-mpirun -np 4 ./part2 123456L 42
+mpirun -np 4 ./part2 123456L 56
 ```
 
 
 correr todo de una vez
 ```cmd
-mpicc part2.c -o part2 -lcrypto &&  mpirun -np 4 ./part2 123456L 42
+mpicc part2.c -o part2 -lcrypto &&  mpirun -np 4 ./part2 123456L 56
 ```
+
+
+Compilar y correr part2_hybrid.c
+```cmd
+mpicc -fopenmp part2_hybrid.c -o part2_hybrid -lcrypto && mpirun -np 4 ./part2_hybrid 18014398509481984L 56 100000 60
+```
+
 
 Nota Importante:
 DES usa 56 bits efectivos (los otros 8 son de paridad).

@@ -24,15 +24,15 @@ static void key_from_ull(unsigned long long key, DES_cblock *k_out) {
 }
 
 /*
-Aplica DES (ECB) bloque a bloque
+Aplicar DES (ECB) bloque a bloque
 
 Cifra o descifra un bloque de datos usando DES en modo ECB
 
 Parámetros:
-key: clave numérica a probar.
-buf: puntero al buffer con el texto (entrada/salida).
-len: longitud del buffer (múltiplo de 8).
-mode: DES_ENCRYPT o DES_DECRYPT.
+key: clave numérica a probar
+buf: puntero al buffer con el texto (entrada/salida)
+len: longitud del buffer (múltiplo de 8)
+mode: DES_ENCRYPT o DES_DECRYPT
 */
 void des_ecb_encrypt_buffer(unsigned long long key, unsigned char *buf, size_t len, int mode) {
     DES_cblock k;
