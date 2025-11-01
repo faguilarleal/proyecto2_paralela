@@ -60,7 +60,7 @@ mpicc -fopenmp part2_hybrid.c -o part2_hybrid -lcrypto && mpirun -np 4 ./part2_h
 
 Compilar y correr part2_adaptative.c
 ```cmd
-mpicc -o adaptive_search adaptive_search.c -lssl -lcrypto
+mpicc -o adaptive_search part2_adaptative.c -lssl -lcrypto
 
 # Llave fácil (encontrada rápido)
 mpirun -np 4 ./adaptive_search 123456 10000000
